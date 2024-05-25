@@ -1,1 +1,1 @@
-A demo stand alone WEBRTC app 
+A demo stand alone WEBRTC application
