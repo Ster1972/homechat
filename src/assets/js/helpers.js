@@ -32,10 +32,10 @@ export default {
     },
 
 
-    replaceTrack( stream, recipientPeer ) {
-        let sender = recipientPeer.getSenders ? recipientPeer.getSenders().find( s => s.track && s.track.kind === stream.kind ) : false;
+    replaceTrack( track, recipientPeer ) {
+        let sender = recipientPeer.getSenders ? recipientPeer.getSenders().find( s => s.track && s.track.kind === track.kind ) : false;
 
-        sender ? sender.replaceTrack( stream ) : '';
+        sender ? sender.replaceTrack( track ) : '';
     },
 
 

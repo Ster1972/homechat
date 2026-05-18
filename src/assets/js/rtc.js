@@ -1,297 +1,220 @@
 import h from './helpers.js';
 
-        let pc = [];
+let pc = {};
+let socket = io('/stream', { "forceWebsockets": true });
+let socketId = '';
+let myStream = null;
+let screenStream = null;
+let roomid = sessionStorage.getItem('roomName');
+let iceServers = null;
 
-        let socket = io( '/stream', {"forceWebsockets": true });
+// Initial stream acquisition
+getAndSetUserStream();
 
-        let socketId = '';
-        let myStream = '';
-        let screen = '';
-        let roomid = sessionStorage.getItem('roomName');
+socket.on('connect', () => {
+    socketId = socket.id;
 
-        //Get user video by default
-        getAndSetUserStream();
+    // Fetch ICE servers once on connection
+    socket.emit('iceserver');
 
-        socket.on( 'connect', () => {
-            socketId = socket.id
-            socket.emit( 'enter_into_call', {
-                room: roomid,
-                socketId: socketId
-            } );
-            // this section only occurs if there are two users or more
-            socket.on( 'new user', ( data ) => {
-                console.log('additional participant joined ', data.socketId, socketId)
-                socket.emit( 'newUserStart', { to: data.socketId, sender: socketId } );
-                pc.push( data.socketId );
-                console.log('pc array = ', pc)
-                init( true, data.socketId );
-            } );
+    socket.on('ice', (data) => {
+        iceServers = data;
+        // Only enter call after we have ICE servers
+        socket.emit('enter_into_call', {
+            room: roomid,
+            socketId: socketId
+        });
+    });
 
+    socket.on('room-full', () => {
+        alert('This room is full (maximum 4 participants). Please try another room.');
+        window.location.href = "/";
+    });
 
-            socket.on( 'newUserStart', ( data ) => {
-                pc.push( data.sender );
-                console.log('list of other users',pc)
-                init( false, data.sender );
-            } );
+    socket.on('new user', (data) => {
+        console.log('New participant joined:', data.socketId);
+        socket.emit('newUserStart', { to: data.socketId, sender: socketId });
+        init(true, data.socketId);
+    });
 
+    socket.on('newUserStart', (data) => {
+        console.log('Initiating handshake with:', data.sender);
+        init(false, data.sender);
+    });
 
-            socket.on('user-disconnected', userId => {
-                console.log('user disconnected', userId, pc)
-                if ( document.getElementById( `${userId}-video` ) ) {
-                  
-                    document.getElementById( `${userId}-video` ).remove();
-                }
-            })
-
-            socket.on( 'ice candidates', async ( data ) => {
-                data.candidate ? await pc[data.sender].addIceCandidate( new RTCIceCandidate( data.candidate ) ) : '';
-            } );
-
-
-            socket.on( 'sdp', async ( data ) => {
-                if ( data.description.type === 'offer' ) {
-                    data.description ? await pc[data.sender].setRemoteDescription( new RTCSessionDescription( data.description ) ) : '';
-
-                    h.getUserFullMedia().then( async ( stream ) => {
-                        if ( !document.getElementById( 'local' ).srcObject ) {
-                            h.setLocalStream( stream );
-                        }
-
-                        //save my stream
-                        myStream = stream;
-
-                        stream.getTracks().forEach( ( track ) => {
-                            pc[data.sender].addTrack( track, stream );
-                        } );
-
-                        let answer = await pc[data.sender].createAnswer();
-
-                        await pc[data.sender].setLocalDescription( answer );
-
-                        socket.emit( 'sdp', { description: pc[data.sender].localDescription, to: data.sender, sender: socketId } );
-                    } ).catch( ( e ) => {
-                        console.error( e );
-                    } );
-                }
-
-                else if ( data.description.type === 'answer' ) {
-                    await pc[data.sender].setRemoteDescription( new RTCSessionDescription( data.description ) );
-                }
-            } );
-
-        } );
-
-
-        function getAndSetUserStream() {
-            h.getUserFullMedia().then( ( stream ) => {
-                //save my video and audio stream
-                myStream = stream;
-
-                h.setLocalStream( stream );
-            } ).catch( ( e ) => {
-                console.error( `stream error: ${ e }` );
-            } );
+    socket.on('user-disconnected', userId => {
+        console.log('User disconnected:', userId);
+        if (pc[userId]) {
+            pc[userId].close();
+            delete pc[userId];
         }
+        h.closeVideo(`${userId}-video`);
+    });
 
-        function init( createOffer, partnerName ) {
-            console.log('init.... ', createOffer, partnerName)
-            let ice
-            socket.emit('iceserver', () => {
-                console.log(data)
-            })
-            socket.on('ice', (data)=>{
-                ice = data
-            })
-            
-            pc[partnerName] = new RTCPeerConnection( ice );
-            console.log('partName', pc[partnerName])
-
-            if ( screen && screen.getTracks().length ) {
-                console.log("STEP ONE")
-                screen.getTracks().forEach( ( track ) => {
-                    pc[partnerName].addTrack( track, screen );//should trigger negotiationneeded event
-                } );
+    socket.on('ice candidates', async (data) => {
+        try {
+            if (data.candidate && pc[data.sender]) {
+                await pc[data.sender].addIceCandidate(data.candidate);
             }
-
-            else if ( myStream ) {
-                console.log("STEP TWO")
-                myStream.getTracks().forEach( ( track ) => {
-                    pc[partnerName].addTrack( track, myStream );//should trigger negotiationneeded event
-                } );
-            }
-
-            else {
-                console.log("STEP Three")
-                h.getUserFullMedia().then( ( stream ) => {
-                    //save my stream
-                    myStream = stream;
-
-                    stream.getTracks().forEach( ( track ) => {
-                        pc[partnerName].addTrack( track, stream );//should trigger negotiationneeded event
-                    } );
-
-                    h.setLocalStream( stream );
-                } ).catch( ( e ) => {
-                    console.error( `stream error: ${ e }` );
-                } );
-            }
-
-
-
-            //create offer
-            if ( createOffer ) {
-                pc[partnerName].onnegotiationneeded = async () => {
-                    let offer = await pc[partnerName].createOffer();
-
-                    await pc[partnerName].setLocalDescription( offer );
-
-                    socket.emit( 'sdp', { description: pc[partnerName].localDescription, to: partnerName, sender: socketId } );
-                };
-            }
-
-
-
-            //send ice candidate to partnerNames
-            pc[partnerName].onicecandidate = ( { candidate } ) => {
-                socket.emit( 'ice candidates', { candidate: candidate, to: partnerName, sender: socketId } );
-            };
-
-
-
-            //add
-            pc[partnerName].ontrack = ( e ) => {
-                let str = e.streams[0];
-                if ( document.getElementById( `${ partnerName }-video` ) ) {
-                    document.getElementById( `${ partnerName }-video` ).srcObject = str;
-                }
-
-                else {
-                    //video elem
-                    let newVid = document.createElement( 'video' );
-                    newVid.id = `${ partnerName }-video`;
-                    newVid.srcObject = str;
-                    newVid.autoplay = true
-                    newVid.className = 'remote-video video-container'
-                    newVid.style.marginLeft = '22px'; // Set the left margin
-                    newVid.disablePictureInPicture = true;
-
-                     // Create a new row for each remote video
-                    let newRow = document.createElement('div');
-                    newRow.className = 'row d-flex justify-content-center align-items-center mt-2';
-                    newRow.appendChild(newVid);
-
-                    // Append the new row to the videos container
-                    document.getElementById('videos').appendChild(newRow);
-                            
-                }
-            };
-
-
-
-            pc[partnerName].onconnectionstatechange = ( d ) => {
-                switch ( pc[partnerName].iceConnectionState ) {
-                    case 'disconnected':
-                    case 'failed':
-                        h.closeVideo( partnerName );
-                        break;
-
-                    case 'closed':
-                        h.closeVideo( partnerName );
-                        break;
-                }
-            };
-
-
-
-            pc[partnerName].onsignalingstatechange = ( d ) => {
-                switch ( pc[partnerName].signalingState ) {
-                    case 'closed':
-                        console.log( "Signalling state is 'closed'" );
-                        h.closeVideo( partnerName );
-                        break;
-                }
-            };
+        } catch (e) {
+            console.error('Error adding ICE candidate:', e);
         }
+    });
 
+    socket.on('sdp', async (data) => {
+        try {
+            if (!pc[data.sender]) return;
 
-
-
-
-
-
-        function broadcastNewTracks( stream, type, mirrorMode = true ) {
-            h.setLocalStream( stream, mirrorMode );
-
-            let track = type === 'audio' ? stream.getAudioTracks()[0] : stream.getVideoTracks()[0];
-
-            for ( let p in pc ) {
-                let pName = pc[p];
-
-                if ( typeof pc[pName] === 'object' ) {
-                    h.replaceTrack( track, pc[pName] );
+            if (data.description.type === 'offer') {
+                await pc[data.sender].setRemoteDescription(data.description);
+                
+                // If we don't have a stream yet, try to get it
+                if (!myStream) {
+                    await getAndSetUserStream();
                 }
+
+                // Answer is created after tracks are added in init or here if needed
+                // But tracks are already added in init(false, data.sender) called by newUserStart
+                const answer = await pc[data.sender].createAnswer();
+                await pc[data.sender].setLocalDescription(answer);
+
+                socket.emit('sdp', { 
+                    description: pc[data.sender].localDescription, 
+                    to: data.sender, 
+                    sender: socketId 
+                });
+            } else if (data.description.type === 'answer') {
+                await pc[data.sender].setRemoteDescription(data.description);
             }
+        } catch (e) {
+            console.error('Error handling SDP:', e);
         }
+    });
+});
 
+async function getAndSetUserStream() {
+    try {
+        const stream = await h.getUserFullMedia();
+        myStream = stream;
+        h.setLocalStream(stream);
+        return stream;
+    } catch (e) {
+        console.error(`Stream error: ${e}`);
+        if (e.name === 'NotFoundError') {
+            alert('No camera or microphone found.');
+        } else {
+            alert('Could not access camera/microphone. Please check permissions.');
+        }
+    }
+}
 
-        //When the video mute icon is clicked
-        document.getElementById('toggle-video').addEventListener('click', (e) => {
-            e.preventDefault();
-            console.log('toggle video working')
-            let iconVideo = document.getElementById('buttonVideo')
-            if (myStream.getVideoTracks()[0].enabled){
-              if (e.target.classList.contains('btn-secondary')){
-              iconVideo.className = 'bi bi-camera-video-off-fill'
-              myStream.getVideoTracks()[0].enabled = false;
-              }
-              else if (e.target.classList.contains('bi-camera-video-fill') || e.target.classList.contains('btn-secondary')){
-                e.target.classList.remove('bi-camera-video-fill');
-                e.target.classList.add('bi-camera-video-off-fill');
-                myStream.getVideoTracks()[0].enabled = false;
-                }
-              }
-            else {
-              if (e.target.classList.contains('btn-secondary')){
-                  iconVideo.className = 'bi bi-camera-video-fill'
-                  myStream.getVideoTracks()[0].enabled = true;
-              }
-              else if(e.target.classList.contains('bi-camera-video-off-fill') || e.target.classList.contains('btn-secondary')){
-                  e.target.classList.remove('bi-camera-video-off-fill');
-                  e.target.classList.add('bi-camera-video-fill');
-                  myStream.getVideoTracks()[0].enabled = true;
-              }
+async function init(createOffer, partnerName) {
+    console.log('Initializing connection with:', partnerName, 'CreateOffer:', createOffer);
+    
+    pc[partnerName] = new RTCPeerConnection(iceServers);
+
+    // Add local tracks to the peer connection
+    const currentStream = screenStream || myStream;
+    if (currentStream) {
+        currentStream.getTracks().forEach((track) => {
+            pc[partnerName].addTrack(track, currentStream);
+        });
+    }
+
+    // ICE Candidate handler
+    pc[partnerName].onicecandidate = ({ candidate }) => {
+        socket.emit('ice candidates', { candidate, to: partnerName, sender: socketId });
+    };
+
+    // Track handler (Remote stream)
+    pc[partnerName].ontrack = (e) => {
+        const remoteStream = e.streams[0];
+        const videoId = `${partnerName}-video`;
+        
+        let videoElem = document.getElementById(videoId);
+        if (videoElem) {
+            videoElem.srcObject = remoteStream;
+        } else {
+            videoElem = document.createElement('video');
+            videoElem.id = videoId;
+            videoElem.srcObject = remoteStream;
+            videoElem.autoplay = true;
+            videoElem.className = 'remote-video video-container';
+            videoElem.style.marginLeft = '22px';
+            videoElem.disablePictureInPicture = true;
+
+            const row = document.createElement('div');
+            row.className = 'row d-flex justify-content-center align-items-center mt-2';
+            row.appendChild(videoElem);
+            document.getElementById('videos').appendChild(row);
+        }
+    };
+
+    // Connection state monitoring
+    pc[partnerName].onconnectionstatechange = () => {
+        console.log(`Connection state with ${partnerName}: ${pc[partnerName].connectionState}`);
+        if (['disconnected', 'failed', 'closed'].includes(pc[partnerName].connectionState)) {
+            h.closeVideo(`${partnerName}-video`);
+        }
+    };
+
+    // Negotiation handler
+    if (createOffer) {
+        pc[partnerName].onnegotiationneeded = async () => {
+            try {
+                const offer = await pc[partnerName].createOffer();
+                await pc[partnerName].setLocalDescription(offer);
+                socket.emit('sdp', { 
+                    description: pc[partnerName].localDescription, 
+                    to: partnerName, 
+                    sender: socketId 
+                });
+            } catch (e) {
+                console.error('Negotiation error:', e);
             }
-          broadcastNewTracks(myStream, 'video')
-          
-          })
+        };
+    }
+}
 
-        //When the audio mute icon is clicked
+// UI Event Listeners
+document.getElementById('toggle-video').addEventListener('click', (e) => {
+    e.preventDefault();
+    if (!myStream) return;
+
+    const track = myStream.getVideoTracks()[0];
+    if (!track) return;
+
+    track.enabled = !track.enabled;
+    
+    const icon = document.getElementById('buttonVideo');
+    const btn = document.getElementById('toggle-video');
+    
+    if (track.enabled) {
+        icon.className = 'bi bi-camera-video-fill';
+        btn.title = "Hide Video";
+    } else {
+        icon.className = 'bi bi-camera-video-off-fill';
+        btn.title = "Show Video";
+    }
+});
+
 document.getElementById('toggle-mute').addEventListener('click', (e) => {
     e.preventDefault();
-    console.log('audio on/off')
-    let iconAudio = document.getElementById('buttonAudio')
-      if (myStream.getAudioTracks()[0].enabled){
-        if (e.target.classList.contains('btn-secondary')){
-          iconAudio.className = 'bi bi-mic-mute-fill'
-          myStream.getAudioTracks()[0].enabled = false;
-        }
-        else if (e.target.classList.contains('bi-mic-fill')){
-          e.target.classList.remove('bi-mic-fill');
-          e.target.classList.add('bi-mic-mute-fill');
-          myStream.getAudioTracks()[0].enabled = false;
-          }
-      }
-      else {
-        if (e.target.classList.contains('btn-secondary')){
-            iconAudio.className = 'bi bi-mic-fill'
-            myStream.getAudioTracks()[0].enabled = true;
-        }
-        else if(e.target.classList.contains('bi-mic-mute-fill')){
-            e.target.classList.remove('bi-mic-mute-fill');
-            e.target.classList.add('bi-mic-fill');
-            myStream.getAudioTracks()[0].enabled = true;
-        }
-      }
-    broadcastNewTracks(myStream, 'audio')
-    });
-    
+    if (!myStream) return;
+
+    const track = myStream.getAudioTracks()[0];
+    if (!track) return;
+
+    track.enabled = !track.enabled;
+
+    const icon = document.getElementById('buttonAudio');
+    const btn = document.getElementById('toggle-mute');
+
+    if (track.enabled) {
+        icon.className = 'bi bi-mic-fill';
+        btn.title = "Mute";
+    } else {
+        icon.className = 'bi bi-mic-mute-fill';
+        btn.title = "Unmute";
+    }
+});

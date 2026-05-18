@@ -11,7 +11,7 @@ window.addEventListener( 'load', () => {
             document.querySelector('#err-msg').innerText = "";
 
             //save the user's room in sessionStorage
-            sessionStorage.setItem( 'room', roomName);
+            sessionStorage.setItem( 'roomName', roomName);
 
             //Share the room link with your partners.`;
              location.reload();

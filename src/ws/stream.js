@@ -2,12 +2,21 @@ import fs from 'fs';
 
 const stream = ( socket, io ) => {
     socket.on( 'enter_into_call', ( data ) => {
-        //join a room and the session
-        socket.join( data.room );
         const clients = socket.adapter.rooms.get(data.room);
         const numClients = clients ? clients.size : 0;
+
+        if (numClients >= 4) {
+            socket.emit('room-full');
+            return;
+        }
+
+        //join a room and the session
+        socket.join( data.room );
+        const updatedClients = socket.adapter.rooms.get(data.room);
+        const updatedNumClients = updatedClients ? updatedClients.size : 0;
+        
         //Inform other members in the room of new user's arrival
-        if ( numClients > 1 ) {
+        if ( updatedNumClients > 1 ) {
             console.log('another user joining call')
             socket.to( data.room ).emit( 'new user', { socketId: data.socketId } );
         }
