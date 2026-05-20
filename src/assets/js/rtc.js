@@ -1,11 +1,14 @@
 import h from './helpers.js';
 
 let pc = {};
+let candidateQueue = {};
 let socket = io('/stream', { "forceWebsockets": true });
 let socketId = '';
 let myStream = null;
+let myStreamPromise = null;
 let screenStream = null;
 let roomid = sessionStorage.getItem('roomName');
+let currentLayout = 'quadrant'; // 'quadrant' or 'column'
 let iceServers = null;
 
 // Initial stream acquisition
@@ -48,13 +51,22 @@ socket.on('connect', () => {
             pc[userId].close();
             delete pc[userId];
         }
+        if (candidateQueue[userId]) {
+            delete candidateQueue[userId];
+        }
         h.closeVideo(`${userId}-video`);
     });
 
     socket.on('ice candidates', async (data) => {
         try {
             if (data.candidate && pc[data.sender]) {
-                await pc[data.sender].addIceCandidate(data.candidate);
+                if (pc[data.sender].remoteDescription && pc[data.sender].remoteDescription.type) {
+                    await pc[data.sender].addIceCandidate(data.candidate);
+                } else {
+                    // Queue candidate if remote description is not set
+                    if (!candidateQueue[data.sender]) candidateQueue[data.sender] = [];
+                    candidateQueue[data.sender].push(data.candidate);
+                }
             }
         } catch (e) {
             console.error('Error adding ICE candidate:', e);
@@ -68,13 +80,19 @@ socket.on('connect', () => {
             if (data.description.type === 'offer') {
                 await pc[data.sender].setRemoteDescription(data.description);
                 
+                // Process any queued candidates
+                if (candidateQueue[data.sender]) {
+                    for (const candidate of candidateQueue[data.sender]) {
+                        await pc[data.sender].addIceCandidate(candidate);
+                    }
+                    delete candidateQueue[data.sender];
+                }
+
                 // If we don't have a stream yet, try to get it
                 if (!myStream) {
                     await getAndSetUserStream();
                 }
 
-                // Answer is created after tracks are added in init or here if needed
-                // But tracks are already added in init(false, data.sender) called by newUserStart
                 const answer = await pc[data.sender].createAnswer();
                 await pc[data.sender].setLocalDescription(answer);
 
@@ -85,6 +103,14 @@ socket.on('connect', () => {
                 });
             } else if (data.description.type === 'answer') {
                 await pc[data.sender].setRemoteDescription(data.description);
+                
+                // Process any queued candidates
+                if (candidateQueue[data.sender]) {
+                    for (const candidate of candidateQueue[data.sender]) {
+                        await pc[data.sender].addIceCandidate(candidate);
+                    }
+                    delete candidateQueue[data.sender];
+                }
             }
         } catch (e) {
             console.error('Error handling SDP:', e);
@@ -93,33 +119,33 @@ socket.on('connect', () => {
 });
 
 async function getAndSetUserStream() {
-    try {
-        const stream = await h.getUserFullMedia();
-        myStream = stream;
-        h.setLocalStream(stream);
-        return stream;
-    } catch (e) {
-        console.error(`Stream error: ${e}`);
-        if (e.name === 'NotFoundError') {
-            alert('No camera or microphone found.');
-        } else {
-            alert('Could not access camera/microphone. Please check permissions.');
+    if (myStreamPromise) return myStreamPromise;
+
+    myStreamPromise = new Promise(async (resolve, reject) => {
+        try {
+            const stream = await h.getUserFullMedia();
+            myStream = stream;
+            h.setLocalStream(stream);
+            resolve(stream);
+        } catch (e) {
+            console.error(`Stream error: ${e}`);
+            myStreamPromise = null; // Reset to allow retry on next call
+            if (e.name === 'NotFoundError') {
+                alert('No camera or microphone found.');
+            } else {
+                alert('Could not access camera/microphone. Please check permissions.');
+            }
+            reject(e);
         }
-    }
+    });
+
+    return myStreamPromise;
 }
 
 async function init(createOffer, partnerName) {
     console.log('Initializing connection with:', partnerName, 'CreateOffer:', createOffer);
     
     pc[partnerName] = new RTCPeerConnection(iceServers);
-
-    // Add local tracks to the peer connection
-    const currentStream = screenStream || myStream;
-    if (currentStream) {
-        currentStream.getTracks().forEach((track) => {
-            pc[partnerName].addTrack(track, currentStream);
-        });
-    }
 
     // ICE Candidate handler
     pc[partnerName].onicecandidate = ({ candidate }) => {
@@ -129,7 +155,8 @@ async function init(createOffer, partnerName) {
     // Track handler (Remote stream)
     pc[partnerName].ontrack = (e) => {
         const remoteStream = e.streams[0];
-        const videoId = `${partnerName}-video`;
+        const containerId = `${partnerName}-video`;
+        const videoId = `${partnerName}-video-element`;
         
         let videoElem = document.getElementById(videoId);
         if (videoElem) {
@@ -140,13 +167,14 @@ async function init(createOffer, partnerName) {
             videoElem.srcObject = remoteStream;
             videoElem.autoplay = true;
             videoElem.className = 'remote-video video-container';
-            videoElem.style.marginLeft = '22px';
             videoElem.disablePictureInPicture = true;
 
-            const row = document.createElement('div');
-            row.className = 'row d-flex justify-content-center align-items-center mt-2';
-            row.appendChild(videoElem);
-            document.getElementById('videos').appendChild(row);
+            const col = document.createElement('div');
+            col.id = containerId;
+            col.className = 'video-container-wrapper';
+            col.appendChild(videoElem);
+            
+            document.getElementById('video-grid').appendChild(col);
         }
     };
 
@@ -174,6 +202,16 @@ async function init(createOffer, partnerName) {
             }
         };
     }
+
+    // Add local tracks asynchronously without blocking the init process
+    getAndSetUserStream().then(stream => {
+        const currentStream = screenStream || stream;
+        if (currentStream && pc[partnerName]) {
+            currentStream.getTracks().forEach((track) => {
+                pc[partnerName].addTrack(track, currentStream);
+            });
+        }
+    }).catch(e => console.error('Error adding tracks in init:', e));
 }
 
 // UI Event Listeners
@@ -216,5 +254,29 @@ document.getElementById('toggle-mute').addEventListener('click', (e) => {
     } else {
         icon.className = 'bi bi-mic-mute-fill';
         btn.title = "Unmute";
+    }
+});
+
+document.getElementById('toggle-layout').addEventListener('click', (e) => {
+    e.preventDefault();
+    
+    const grid = document.getElementById('video-grid');
+    const icon = document.getElementById('buttonLayout');
+    const btn = document.getElementById('toggle-layout');
+
+    if (currentLayout === 'quadrant') {
+        // Switch to Column View
+        currentLayout = 'column';
+        grid.classList.remove('quadrant-layout');
+        grid.classList.add('column-layout');
+        icon.className = 'bi bi-grid-3x3-gap-fill';
+        btn.title = "Quadrant View";
+    } else {
+        // Switch to Quadrant View
+        currentLayout = 'quadrant';
+        grid.classList.remove('column-layout');
+        grid.classList.add('quadrant-layout');
+        icon.className = 'bi bi-view-stacked';
+        btn.title = "Column View";
     }
 });
