@@ -280,3 +280,29 @@ document.getElementById('toggle-layout').addEventListener('click', (e) => {
         btn.title = "Column View";
     }
 });
+
+document.getElementById('disconnect-btn').addEventListener('click', (e) => {
+    e.preventDefault();
+    
+    // Stop local media stream tracks so camera/mic lights go off
+    if (myStream) {
+        myStream.getTracks().forEach(track => track.stop());
+    }
+    if (screenStream) {
+        screenStream.getTracks().forEach(track => track.stop());
+    }
+    
+    // Close all peer connections
+    for (const id in pc) {
+        if (pc[id]) {
+            pc[id].close();
+        }
+    }
+    pc = {};
+    
+    // Disconnect socket from namespace
+    socket.disconnect();
+    
+    // Redirect user back to the home entry portal page
+    window.location.href = "/";
+});
